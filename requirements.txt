@@ -1,0 +1,22 @@
+# PERI Project Requirements
+# Python 3.10+ (due to modern type hint usage like 'float | None')
+
+# Core Deep Learning
+torch>=2.0.0
+torchvision>=0.15.0
+
+# Numerical & Data Science
+numpy>=1.24.0
+scipy
+matplotlib
+
+# Computer Vision & Tasks
+mediapipe
+Pillow>=9.0.0
+
+# Logging & Monitoring
+tensorboard>=2.12.0
+
+# Miscellaneous
+typing-extensions>=4.6.0
+tqdm>=4.60.0

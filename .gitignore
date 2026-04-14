@@ -1,0 +1,15 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+.env
+.idea/
+.vscode/
+data/
+runs/
+checkpoints/
+*.pt
+*.pth
+emotic/ 
+outputs/ 
+logs/
