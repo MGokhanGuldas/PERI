@@ -18,7 +18,7 @@ PRESETS: dict[str, dict[str, object]] = {
         "mode": "paper_faithful",
         "model_name": "baseline_twostream",
         "pas_fusion_mode": "none",
-        "cont_in_stages": ("layer1", "layer2", "layer3", "layer4"),
+        "cont_in_stages": ("layer1", "layer2", "layer3"),
         "pas_sigma": 3.0,
     },
     "pas_on_cont_in_off_sigma3": {
@@ -32,21 +32,21 @@ PRESETS: dict[str, dict[str, object]] = {
         "mode": "experimental",
         "model_name": "peri_sigma1",
         "pas_fusion_mode": "cont_in",
-        "cont_in_stages": ("layer1", "layer2", "layer3", "layer4"),
+        "cont_in_stages": ("layer1", "layer2", "layer3"),
         "pas_sigma": 1.0,
     },
     "pas_on_cont_in_on_sigma3": {
         "mode": "paper_faithful",
         "model_name": "peri",
         "pas_fusion_mode": "cont_in",
-        "cont_in_stages": ("layer1", "layer2", "layer3", "layer4"),
+        "cont_in_stages": ("layer1", "layer2", "layer3"),
         "pas_sigma": 3.0,
     },
     "pas_on_cont_in_on_sigma5": {
         "mode": "experimental",
         "model_name": "peri_sigma5",
         "pas_fusion_mode": "cont_in",
-        "cont_in_stages": ("layer1", "layer2", "layer3", "layer4"),
+        "cont_in_stages": ("layer1", "layer2", "layer3"),
         "pas_sigma": 5.0,
     },
 }

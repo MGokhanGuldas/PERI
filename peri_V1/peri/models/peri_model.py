@@ -10,7 +10,7 @@ from torch import nn
 from peri.data.emotic_constants import IMAGENET_MEAN, IMAGENET_STD
 
 from .backbones import ResNet18Backbone
-from .fusion import ContInBlock, FusionHead, LatePASFusion, SharedPASEncoder, resolve_feature_concat
+from .fusion import ContInBlock, FusionHead, LatePASFusion, resolve_feature_concat
 
 
 def _ensure_batched(name: str, tensor: torch.Tensor | None) -> torch.Tensor:
@@ -24,6 +24,8 @@ def _ensure_batched(name: str, tensor: torch.Tensor | None) -> torch.Tensor:
 
 
 class PERIModel(nn.Module):
+    paper_cont_in_stages = ("layer1", "layer2", "layer3")
+
     def __init__(
         self,
         *,
@@ -32,7 +34,7 @@ class PERIModel(nn.Module):
         vad_dim: int = 3,
         hidden_dim: int = 512,
         pas_fusion_mode: str = "cont_in",
-        cont_in_stages: tuple[str, ...] = ("layer1", "layer2", "layer3", "layer4"),
+        cont_in_stages: tuple[str, ...] = paper_cont_in_stages,
         cont_in_variant: str = "paper",
     ) -> None:
         super().__init__()
@@ -42,7 +44,6 @@ class PERIModel(nn.Module):
         self.body_backbone = ResNet18Backbone(pretrained=pretrained)
         self.register_buffer("imagenet_mean", torch.tensor(IMAGENET_MEAN, dtype=torch.float32).view(1, 3, 1, 1), persistent=False)
         self.register_buffer("imagenet_std", torch.tensor(IMAGENET_STD, dtype=torch.float32).view(1, 3, 1, 1), persistent=False)
-        self.shared_pas_encoder: SharedPASEncoder | None = None
 
         if pas_fusion_mode == "cont_in":
             self.cont_in_blocks = nn.ModuleDict(
@@ -50,12 +51,11 @@ class PERIModel(nn.Module):
                     stage: ContInBlock(
                         channels=ResNet18Backbone.stage_channels[stage],
                         variant=cont_in_variant,
+                        stage_name=stage,
                     )
                     for stage in self.cont_in_stages
                 }
             )
-            if cont_in_variant == "paper":
-                self.shared_pas_encoder = SharedPASEncoder(stage_names=self.cont_in_stages)
             self.late_pas_fusion = None
         elif pas_fusion_mode == "late":
             self.cont_in_blocks = nn.ModuleDict()
@@ -79,18 +79,12 @@ class PERIModel(nn.Module):
         x = encoder.relu(encoder.bn1(encoder.conv1(body_image)))
         x = encoder.maxpool(x)
         outputs: dict[str, torch.Tensor] = {}
-        shared_pas_features: dict[str, torch.Tensor] | None = None
-        if self.shared_pas_encoder is not None:
-            if pas_image is None:
-                raise ValueError("pas_image is required when PAS fusion mode is 'cont_in'.")
-            shared_pas_features = self.shared_pas_encoder(pas_image)
         for stage_name in ("layer1", "layer2", "layer3", "layer4"):
             x = getattr(encoder, stage_name)(x)
             if stage_name in self.cont_in_blocks:
                 if pas_image is None:
                     raise ValueError("pas_image is required when PAS fusion mode is 'cont_in'.")
-                pas_signal = shared_pas_features[stage_name] if shared_pas_features is not None else pas_image
-                x = self.cont_in_blocks[stage_name](x, pas_signal)
+                x = self.cont_in_blocks[stage_name](x, pas_image)
             outputs[stage_name] = x
         outputs["pooled"] = torch.flatten(encoder.avgpool(x), 1)
         return outputs

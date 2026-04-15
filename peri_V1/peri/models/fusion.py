@@ -29,67 +29,52 @@ class FusionHead(nn.Module):
         }
 
 
-class SharedPASEncoder(nn.Module):
-    """Encode PAS once and expose aligned multi-scale features for every Cont-In stage."""
+class PaperPASStageEncoder(nn.Module):
+    """Stage-specific PAS encoder used by each paper-faithful Cont-In block."""
 
     _stage_order = ("layer1", "layer2", "layer3", "layer4")
+    _stage_channels = {"layer1": 64, "layer2": 128, "layer3": 256, "layer4": 512}
 
-    def __init__(self, *, stage_names: Iterable[str] = _stage_order) -> None:
+    def __init__(self, *, stage_name: str) -> None:
         super().__init__()
-        self.stage_names = tuple(stage_names)
-        unsupported = sorted(set(self.stage_names) - set(self._stage_order))
-        if unsupported:
-            raise ValueError(f"Unsupported PAS stages: {unsupported}")
-
-        self.stem = nn.Sequential(
+        if stage_name not in self._stage_order:
+            raise ValueError(f"Unsupported PAS stage {stage_name!r}.")
+        self.stage_name = stage_name
+        blocks: list[nn.Module] = [
             nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False),
             nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
             nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
-        )
-        self.layer1_proj = nn.Sequential(
-            nn.Conv2d(64, 64, kernel_size=1, bias=False),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-        )
-        self.down_blocks = nn.ModuleDict(
-            {
-                "layer2": self._make_down_block(64, 128),
-                "layer3": self._make_down_block(128, 256),
-                "layer4": self._make_down_block(256, 512),
-            }
-        )
+        ]
+        current_channels = 64
+        for next_stage in ("layer2", "layer3", "layer4"):
+            if self._stage_order.index(next_stage) > self._stage_order.index(stage_name):
+                break
+            next_channels = self._stage_channels[next_stage]
+            blocks.extend(
+                [
+                    nn.Conv2d(current_channels, next_channels, kernel_size=3, stride=2, padding=1, bias=False),
+                    nn.BatchNorm2d(next_channels),
+                    nn.ReLU(inplace=True),
+                ]
+            )
+            current_channels = next_channels
+        self.encoder = nn.Sequential(*blocks)
+        self.out_channels = current_channels
 
-    @staticmethod
-    def _make_down_block(in_channels: int, out_channels: int) -> nn.Sequential:
-        return nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=2, padding=1, bias=False),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True),
-        )
-
-    def forward(self, pas_image: torch.Tensor) -> dict[str, torch.Tensor]:
-        stage_features: dict[str, torch.Tensor] = {}
-        x = self.stem(pas_image)
-        stage_features["layer1"] = self.layer1_proj(x)
-        x = stage_features["layer1"]
-        x = self.down_blocks["layer2"](x)
-        stage_features["layer2"] = x
-        x = self.down_blocks["layer3"](x)
-        stage_features["layer3"] = x
-        x = self.down_blocks["layer4"](x)
-        stage_features["layer4"] = x
-        return {stage_name: stage_features[stage_name] for stage_name in self.stage_names}
+    def forward(self, pas_image: torch.Tensor) -> torch.Tensor:
+        return self.encoder(pas_image)
 
 
 class ContInBlock(nn.Module):
-    """Lightweight context infusion block using shared PAS features and body activations."""
+    """Context infusion block for the paper-faithful path and controlled ablations."""
 
     def __init__(
         self,
         *,
         channels: int,
         variant: str = "paper",
+        stage_name: str | None = None,
         pas_hidden_channels: int | None = None,
     ) -> None:
         super().__init__()
@@ -97,16 +82,16 @@ class ContInBlock(nn.Module):
         self.channels = channels
 
         if variant == "paper":
+            if stage_name is None:
+                raise ValueError("stage_name is required for the paper Cont-In variant.")
+            self.pas_encoder: nn.Module | None = PaperPASStageEncoder(stage_name=stage_name)
             self.modulation = nn.Sequential(
-                nn.Conv2d(channels * 2, channels, kernel_size=1, bias=False),
+                nn.Conv2d(channels * 2, channels, kernel_size=3, padding=1, bias=False),
                 nn.BatchNorm2d(channels),
                 nn.ReLU(inplace=True),
-                nn.Conv2d(channels, channels, kernel_size=3, padding=1, groups=channels, bias=False),
+                nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False),
                 nn.BatchNorm2d(channels),
             )
-            # Start close to identity without hard-zeroing the whole residual path.
-            self.residual_scale = nn.Parameter(torch.tensor(0.1, dtype=torch.float32))
-            self.pas_encoder = None
             self.output_activation = None
         elif variant == "residual":
             hidden = pas_hidden_channels or max(channels // 4, 32)
@@ -126,13 +111,13 @@ class ContInBlock(nn.Module):
                 nn.ReLU(inplace=True),
                 nn.BatchNorm2d(channels),
             )
-            self.residual_scale = None
             self.output_activation = nn.ReLU(inplace=True)
         else:
             raise ValueError(f"Unsupported Cont-In variant {variant!r}.")
 
     def forward(self, body_features: torch.Tensor, pas_signal: torch.Tensor) -> torch.Tensor:
-        pas_features = pas_signal if self.pas_encoder is None else self.pas_encoder(pas_signal)
+        assert self.pas_encoder is not None
+        pas_features = self.pas_encoder(pas_signal)
         if pas_features.shape[1] != self.channels:
             raise ValueError(
                 f"Cont-In channel mismatch: expected PAS features with {self.channels} channels, "
@@ -143,8 +128,7 @@ class ContInBlock(nn.Module):
         fused = torch.cat([body_features, pas_features], dim=1)
         update = self.modulation(fused)
         if self.variant == "paper":
-            assert self.residual_scale is not None
-            return body_features + (self.residual_scale * update)
+            return update
         assert self.output_activation is not None
         return self.output_activation(body_features + update)
 

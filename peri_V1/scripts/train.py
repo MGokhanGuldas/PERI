@@ -27,7 +27,7 @@ def main() -> None:
     parser.add_argument("--experiment-name", type=str, default="peri")
     parser.add_argument("--run-name", type=str, default=None)
     parser.add_argument("--pas-fusion-mode", choices=("cont_in", "late", "none"), default="cont_in")
-    parser.add_argument("--cont-in-stages", type=str, default="layer1,layer2,layer3,layer4")
+    parser.add_argument("--cont-in-stages", type=str, default="layer1,layer2,layer3")
     parser.add_argument("--cont-in-variant", choices=("paper", "residual"), default="paper")
     parser.add_argument("--pas-sigma", type=float, default=3.0)
     parser.add_argument("--pas-rho", type=float, default=None)

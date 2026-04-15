@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Literal
+from typing import ClassVar, Literal
 import random
 
 import numpy as np
@@ -23,6 +23,7 @@ EmotionLossName = Literal["dynamic_mse", "focal"]
 
 @dataclass
 class TrainingConfig:
+    paper_cont_in_stages: ClassVar[tuple[str, ...]] = ("layer1", "layer2", "layer3")
     mode: RunMode = "paper_faithful"
     model_name: str = "peri"
     experiment_name: str = "peri"
@@ -42,7 +43,7 @@ class TrainingConfig:
     pas_radius_scale: float = 2.0
     pas_binary: bool = True
     pas_fusion_mode: PASFusionMode = "cont_in"
-    cont_in_stages: tuple[str, ...] = ("layer1", "layer2", "layer3", "layer4")
+    cont_in_stages: tuple[str, ...] = paper_cont_in_stages
     cont_in_variant: ContInVariant = "paper"
     pas_debug: bool = False
     pas_debug_max_samples: int = 5
@@ -92,10 +93,6 @@ class TrainingConfig:
         self.pas_debug_dir = Path(self.pas_debug_dir).resolve() if self.pas_debug_dir is not None else None
         self.precomputed_pas_root = Path(self.precomputed_pas_root).resolve() if self.precomputed_pas_root is not None else None
         self.npy_manifest_root = Path(self.npy_manifest_root).resolve() if self.npy_manifest_root is not None else None
-        if self.npy_manifest_root is None and self.precomputed_pas_root is not None and self.dataset_backend == "npy":
-            # Keep precomputed PAS training aligned to the same split/label manifests that
-            # were used to generate the PAS images.
-            self.npy_manifest_root = self.precomputed_pas_root
         if self.mediapipe_asset_root is None:
             self.mediapipe_asset_root = (self.data_root / "artifacts" / "mediapipe").resolve()
         else:
@@ -146,6 +143,10 @@ class TrainingConfig:
                 raise ValueError("paper_faithful mode allows only pas_fusion_mode='cont_in' or 'none'.")
             if self.cont_in_variant != "paper":
                 raise ValueError("paper_faithful mode requires cont_in_variant='paper'.")
+            if self.pas_fusion_mode == "cont_in" and tuple(self.cont_in_stages) != self.paper_cont_in_stages:
+                raise ValueError(
+                    "paper_faithful mode requires cont_in_stages=('layer1', 'layer2', 'layer3')."
+                )
             if self.uses_pas and abs(self.pas_sigma - 3.0) > 1e-8:
                 raise ValueError("paper_faithful mode requires pas_sigma=3.0.")
             if abs(float(self.label_smoothing)) > 1e-8:
@@ -154,6 +155,8 @@ class TrainingConfig:
                 raise ValueError("paper_faithful mode requires emotion_loss_name='dynamic_mse'.")
             if self.use_weighted_sampler:
                 raise ValueError("paper_faithful mode requires use_weighted_sampler=False.")
+            if self.npy_manifest_root is not None:
+                raise ValueError("paper_faithful mode requires npy_manifest_root=None so official EMOTIC splits are used.")
         if self.pas_fusion_mode != "none" and self.num_workers != 0 and self.precomputed_pas_root is None:
             raise ValueError("num_workers must be 0 when PAS generation is enabled.")
 

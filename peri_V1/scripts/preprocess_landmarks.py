@@ -5,8 +5,13 @@ from __future__ import annotations
 import argparse
 import logging
 from pathlib import Path
+import sys
 
 from tqdm import tqdm
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from peri.data.factory import create_emotic_dataset
 from peri.preprocess.cache import save_landmarks_cache, load_landmarks_cache
@@ -31,7 +36,7 @@ def main() -> None:
     cache_dir = Path(args.cache_dir).resolve()
     cache_dir.mkdir(parents=True, exist_ok=True)
 
-    extractor = LandmarkExtractor()
+    extractor = LandmarkExtractor(asset_root=root / "artifacts" / "mediapipe")
 
     for split in args.splits:
         logger.info(f"Processing split: {split}")

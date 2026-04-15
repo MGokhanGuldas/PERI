@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import csv
+import inspect
 from pathlib import Path
 from typing import Dict, Iterable, Mapping
 import os
@@ -190,9 +191,15 @@ def _load_precomputed_pas_image(
 ) -> np.ndarray:
     if index is None:
         raise FileNotFoundError("No precomputed PAS index available for this sample.")
-    pas_path = Path(precomputed_pas_root).resolve() / f"pas_{split}" / f"{index:06d}.png"
-    if not pas_path.exists():
-        raise FileNotFoundError(f"Missing precomputed PAS image: {pas_path}")
+    pas_dir = Path(precomputed_pas_root).resolve() / f"pas_{split}"
+    candidate_paths = [
+        pas_dir / f"{index:06d}.png",
+        pas_dir / f"{index:07d}.png",
+    ]
+    pas_path = next((path for path in candidate_paths if path.exists()), None)
+    if pas_path is None:
+        preview = ", ".join(str(path) for path in candidate_paths)
+        raise FileNotFoundError(f"Missing precomputed PAS image. Tried: {preview}")
     with Image.open(pas_path) as image:
         pas_image = np.asarray(image.convert("RGB"), dtype=np.uint8).copy()
     if pas_image.shape[:2] != target_shape:
@@ -203,10 +210,31 @@ def _load_precomputed_pas_image(
     return pas_image
 
 
+def _resolve_mediapipe_asset_path(root: Path, asset_name: str) -> Path:
+    """Resolve the best available MediaPipe asset for the requested detector."""
+    candidates = {
+        "holistic": ("holistic_landmarker.task",),
+        "pose": ("pose_landmarker_heavy.task", "pose_landmarker_full.task", "pose_landmarker_lite.task"),
+        "face": ("face_landmarker.task",),
+    }.get(asset_name)
+    if candidates is None:
+        raise KeyError(f"Unsupported MediaPipe asset name {asset_name!r}.")
+    for filename in candidates:
+        candidate_path = root / filename
+        if candidate_path.exists() and candidate_path.stat().st_size > 0:
+            return candidate_path
+    raise FileNotFoundError("\n".join(str(root / filename) for filename in candidates))
+
+
 def ensure_mediapipe_assets(asset_root: str | Path) -> Dict[str, Path]:
     root = Path(asset_root).resolve()
-    source_paths = {name: root / filename for name, filename in MEDIAPIPE_ASSET_FILENAMES.items()}
-    missing = [str(path) for path in source_paths.values() if not path.exists()]
+    source_paths: Dict[str, Path] = {}
+    missing: list[str] = []
+    for name in MEDIAPIPE_ASSET_FILENAMES:
+        try:
+            source_paths[name] = _resolve_mediapipe_asset_path(root, name)
+        except FileNotFoundError as exc:
+            missing.extend(str(line) for line in str(exc).splitlines() if line)
     if missing:
         raise FileNotFoundError("Missing MediaPipe assets required for PAS generation:\n" + "\n".join(missing))
     cache_root = (Path.home() / ".peri_cache" / "mediapipe_assets").resolve()
@@ -247,6 +275,16 @@ def _landmarks_to_dict(
         "source_image": source_image,
         "message": message,
     }
+
+
+def _construct_mediapipe_options(option_cls: type[object], /, **kwargs: object) -> object:
+    """Build a MediaPipe Tasks options object, dropping unsupported kwargs."""
+    try:
+        signature = inspect.signature(option_cls)
+    except (TypeError, ValueError):
+        return option_cls(**kwargs)
+    accepted_kwargs = {name: value for name, value in kwargs.items() if name in signature.parameters}
+    return option_cls(**accepted_kwargs)
 
 
 class LandmarkExtractor:
@@ -291,7 +329,8 @@ class LandmarkExtractor:
         if self._holistic is None:
             # Note: HolisticLandmarker in Tasks API often has complexity defined by the .task file.
             # We set the confidence thresholds to 0.3 to match the high-detail requirement.
-            options = HolisticLandmarkerOptions(
+            options = _construct_mediapipe_options(
+                HolisticLandmarkerOptions,
                 base_options=BaseOptions(model_asset_path=str(self._asset_paths["holistic"])),
                 min_face_detection_confidence=0.3,
                 min_pose_detection_confidence=0.3,
@@ -302,7 +341,8 @@ class LandmarkExtractor:
     def _get_pose(self) -> PoseLandmarker:
         if self._pose is None:
             from mediapipe.tasks.python.vision import PoseLandmarkerOptions as PO
-            options = PO(
+            options = _construct_mediapipe_options(
+                PO,
                 base_options=BaseOptions(model_asset_path=str(self._asset_paths["pose"])),
                 num_poses=1,
                 min_pose_detection_confidence=0.3,
@@ -314,7 +354,8 @@ class LandmarkExtractor:
     def _get_face(self) -> FaceLandmarker:
         if self._face is None:
             from mediapipe.tasks.python.vision import FaceLandmarkerOptions as FO
-            options = FO(
+            options = _construct_mediapipe_options(
+                FO,
                 base_options=BaseOptions(model_asset_path=str(self._asset_paths["face"])),
                 num_faces=1,
                 min_face_detection_confidence=0.3,

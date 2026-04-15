@@ -11,7 +11,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset, Subset, WeightedRandomSampler
 
 from peri.data import create_emotic_dataset_from_config
-from peri.data.emotic_dataset import EMOTICDataset
+from peri.data.emotic_dataset import EMOTICDataset, EMOTICRecord
 from peri.preprocess import EMOTICPreprocessedDataset, LandmarkExtractor, PASDebugWriter, PASGenerator
 
 from .config import TrainingConfig
@@ -94,6 +94,27 @@ def _get_base_emotic_dataset(dataset: Dataset) -> EMOTICDataset | None:
     return None
 
 
+def _record_precomputed_pas_key(record: EMOTICRecord) -> tuple[str, str, tuple[int, int, int, int]]:
+    bbox = tuple(int(round(float(value))) for value in record.bbox.detach().cpu().tolist())
+    return _precomputed_pas_lookup_key(record.source_split, record.filename, bbox)
+
+
+def _validate_precomputed_pas_coverage(
+    dataset: EMOTICDataset,
+    index_map: dict[tuple[str, str, tuple[int, int, int, int]], int],
+    *,
+    split_name: str,
+) -> None:
+    missing = [record.sample_id for record in dataset.records if _record_precomputed_pas_key(record) not in index_map]
+    if missing:
+        preview = ", ".join(missing[:3])
+        raise ValueError(
+            f"Precomputed PAS coverage is incomplete for split {split_name!r}: "
+            f"{len(missing)}/{len(dataset.records)} official samples are missing from the PAS index. "
+            f"Example sample_ids: {preview}"
+        )
+
+
 def _create_weighted_sampler(dataset: Dataset) -> WeightedRandomSampler | None:
     base_ds = _get_base_emotic_dataset(dataset)
     if base_ds is None:
@@ -138,7 +159,7 @@ def build_dataloaders(config: TrainingConfig) -> DataLoaderBundle:
         if config.precomputed_pas_root is None:
             landmark_extractor = LandmarkExtractor(
                 asset_root=config.mediapipe_asset_root,
-                prefer_holistic=False,
+                prefer_holistic=config.mode == "paper_faithful",
                 use_full_image_fallback=config.mode == "experimental",
             )
             pas_debug_writer = PASDebugWriter(config.pas_debug_dir, max_samples=config.pas_debug_max_samples) if config.pas_debug and config.pas_debug_dir is not None else None
@@ -158,6 +179,10 @@ def build_dataloaders(config: TrainingConfig) -> DataLoaderBundle:
                 "val": _load_precomputed_pas_index_map(config.precomputed_pas_root, "val"),
                 "test": _load_precomputed_pas_index_map(config.precomputed_pas_root, "test"),
             }
+            if config.mode == "paper_faithful":
+                _validate_precomputed_pas_coverage(train_dataset, precomputed_pas_index_maps["train"], split_name="train")
+                _validate_precomputed_pas_coverage(val_dataset, precomputed_pas_index_maps["val"], split_name="val")
+                _validate_precomputed_pas_coverage(test_dataset, precomputed_pas_index_maps["test"], split_name="test")
         # augment is passed only for training split; val/test never augment.
         # When precomputed PAS is used, the base EMOTICDataset has augment=False
         # and this wrapper applies synchronized augmentation to body crop + PAS.
